@@ -1,0 +1,5 @@
+# Windows 端依赖（开发机 pip install -r requirements.txt）
+pystray>=0.19.5
+Pillow>=10.0.0
+win11toast>=0.35
+requests>=2.31.0
