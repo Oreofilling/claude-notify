@@ -6,20 +6,39 @@ pystray 在主线程 run()；订阅器/对话框为 daemon 线程。
 首次无 topic 时立即弹设置框（仍同时显示托盘）。
 """
 import logging
+import os
 import threading
 import time
+from logging.handlers import RotatingFileHandler
 
 from app.config import Config
+from app.constants import LOG_PATH, appdata_dir
 from app.history import History, NotificationItem
 from app.subscriber import NtfySubscriber
 from app.notifier import show as show_toast
 from app.tray import Tray
 from app import autostart
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(name)s | %(message)s",
-)
+
+def _setup_logging() -> None:
+    """控制台 + 滚动文件双输出。
+
+    文件始终写到 %APPDATA%\\ClaudeNotify\\app.log，便于排障——
+    这样即使经 pythonw（无 stdout）启动也有日志可查。
+    """
+    os.makedirs(appdata_dir(), exist_ok=True)
+    fmt = logging.Formatter("%(asctime)s %(levelname)s %(name)s | %(message)s")
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    sh = logging.StreamHandler()
+    sh.setFormatter(fmt)
+    root.addHandler(sh)
+    fh = RotatingFileHandler(LOG_PATH, maxBytes=1_000_000, backupCount=2, encoding="utf-8")
+    fh.setFormatter(fmt)
+    root.addHandler(fh)
+
+
+_setup_logging()
 log = logging.getLogger("claude-notify")
 
 
@@ -54,7 +73,8 @@ class App:
             priority=item["priority"], category=cat, ts=time.time(),
         )
         self.history.add(ni)
-        show_toast(ni.title, ni.body, ni.priority, self.config)
+        log.info("收到通知: %s | prio=%s | cat=%s", ni.title, ni.priority, cat)
+        show_toast(ni.title, ni.body, ni.priority, self.config, cat)
         self.tray.set_state("unread")
 
     def on_status(self, status: str):
@@ -82,7 +102,7 @@ class App:
 
     def test(self):
         threading.Thread(
-            target=lambda: show_toast("Claude 测试通知", "通知链路正常 ✅（这条由本地直接弹出）", 4, self.config),
+            target=lambda: show_toast("Claude 测试通知", "通知链路正常 ✅（本地直接弹出）", 3, self.config, "stop"),
             daemon=True,
         ).start()
 

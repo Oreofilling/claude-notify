@@ -5,8 +5,9 @@ App 协调器(main.App)实现：test/show_history/show_settings/
 toggle_pause/toggle_autostart/quit 以及 is_paused/is_autostart。
 """
 import logging
+import os
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 
 try:
     import pystray
@@ -17,13 +18,34 @@ except Exception as _e:
     _HAS_TRAY = False
 
 
+def _font(size: int):
+    """优先用系统粗体 TrueType，回退到 PIL 默认字体。"""
+    for p in (r"C:\Windows\Fonts\arialbd.ttf",
+              r"C:\Windows\Fonts\segoeuib.ttf",
+              r"C:\Windows\Fonts\arial.ttf"):
+        if os.path.exists(p):
+            try:
+                return ImageFont.truetype(p, size)
+            except Exception:
+                pass
+    return ImageFont.load_default()
+
+
 def _make_image(letter: str, bg: str, fg="white") -> Image.Image:
-    img = Image.new("RGB", (64, 64), bg)
+    """圆角彩色方块 + 居中粗体大字母，更像真实 App 图标（非纯色方块）。
+    高分辨率(128)绘制，pystray 缩放到托盘尺寸仍清晰。"""
+    size = 128
+    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
+    d.rounded_rectangle([4, 4, size - 4, size - 4], radius=28, fill=bg)
+    f = _font(86)
     try:
-        d.text((20, 16), letter, fill=fg)
+        bbox = d.textbbox((0, 0), letter, font=f)
+        w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        d.text(((size - w) / 2 - bbox[0], (size - h) / 2 - bbox[1]),
+               letter, font=f, fill=fg)
     except Exception:
-        d.rectangle([22, 22, 42, 42], fill=fg)
+        d.rounded_rectangle([36, 36, size - 36, size - 36], radius=16, fill=fg)
     return img
 
 

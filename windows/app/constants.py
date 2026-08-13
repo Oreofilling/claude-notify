@@ -36,3 +36,4 @@ def appdata_dir() -> str:
 
 
 CONFIG_PATH = os.path.join(appdata_dir(), "config.json")
+LOG_PATH = os.path.join(appdata_dir(), "app.log")
