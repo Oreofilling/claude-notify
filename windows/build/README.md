@@ -1,26 +1,26 @@
-# 打包说明
+# Packaging Guide
 
-## 前置（开发机，Windows）
+## Prerequisites (dev machine, Windows)
 ```bat
 pip install -r requirements.txt pyinstaller
 ```
 
-## 一键打包（onedir）
+## One-click build (onedir)
 ```bat
-cd <项目根目录>
+cd <project-root>
 build\build.bat
 ```
-产物：`dist\ClaudeNotify\ClaudeNotify.exe`（连同同目录 DLL/数据，整文件夹分发）。
+Output: `dist\ClaudeNotify\ClaudeNotify.exe` (along with sibling DLLs/data in the same folder — distribute the whole folder).
 
-## 手动打包
+## Manual build
 ```bat
 pyinstaller --noconfirm --windowed --name ClaudeNotify ^
   --hidden-import pystray._win32 ^
   --collect-all win11toast --collect-all winsdk main.py
 ```
-（等价于 `build\ClaudeNotify.spec`）
+(Equivalent to `build\ClaudeNotify.spec`)
 
-## 注意
-- 首次启动 exe 可能触发 SmartScreen（未签名）-> 点「更多信息」->「仍要运行」。
-- 体积约 40-60MB（winsdk 较大）；onedir 比 onefile 启动快、误报少。
-- 想做开始菜单图标避免 Toast 不弹：右键 exe -> 创建快捷方式 -> 放到「开始菜单\程序」。
+## Notes
+- First launch of the exe may trigger SmartScreen (unsigned) → "More info" → "Run anyway".
+- Size is about 40–60MB (winsdk is large); onedir starts faster than onefile and triggers fewer false positives.
+- To add a Start Menu icon and avoid toasts not appearing: right-click the exe → Create shortcut → place it under "Start Menu\Programs".

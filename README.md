@@ -1,151 +1,151 @@
-# Claude Code → Windows 通知小程序
+# Claude Code → Windows Notifier
+
+> **Languages:** English | [简体中文](README.zh.md)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux-blue)](#)
 [![Python](https://img.shields.io/badge/Python-3.8+-3776AB)](#)
 [![Transport](https://img.shields.io/badge/transport-ntfy-3a9fff)](https://ntfy.sh)
 [![Release](https://img.shields.io/github/v/release/Oreofilling/claude-notify)](https://github.com/Oreofilling/claude-notify/releases)
-[![Stars](https://img.shields.io/github/stars/Oreofilling/claude-notify?style=social)](https://github.com/Oreofilling/claude-notify)
 
-远程 Linux 服务器跑 Claude Code，**任务完成 / 等待输入 / 需要授权**时，自动在 Windows 弹原生 Toast。
-Windows 无需公网 IP 或端口转发——通知经 **ntfy** 协议由 Windows 主动拉取，天然穿透 NAT。
+Get native Windows toast notifications whenever Claude Code running on a **remote Linux server** finishes a task, waits for input, or requests a tool permission. Your Windows PC needs no public IP or port forwarding — notifications are pulled by Windows over the **ntfy** protocol, so they traverse NAT naturally.
 
 ```
-远程 Linux 服务器                          Windows PC
+Remote Linux server                         Windows PC
 ┌──────────────────────┐                ┌──────────────────────────┐
-│ Claude Code          │  POST 事件      │ ClaudeNotify.exe (托盘)  │
-│  ├ Stop hook ──┐     │ ──(经 ntfy)──▶ │  ├ ntfy 订阅(后台线程)   │
-│  └ Notification ┐    │                │  ├ 原生 Toast(分级声音)  │
-│     hook 脚本   └────┤                │  ├ 设置 / 历史 GUI       │
-│  (python3 零依赖)    │                │  └ 开机自启              │
-└──────────────────────┘                └──────────────────────────┘
+│ Claude Code          │  POST events    │ ClaudeNotify.exe (tray)  │
+│  ├ Stop hook ──┐     │ ──(via ntfy)──▶ │  ├ ntfy subscriber (bg)  │
+│  └ Notification ┐    │                 │  ├ native toast (leveled)│
+│     hook script └────┤                 │  ├ settings / history UI │
+│  (python3, zero-dep) │                 │  └ autostart             │
+└──────────────────────┘                 └──────────────────────────┘
 ```
 
-## 三类时机
+## Three trigger moments
 
-| 时机 | 触发 | 通知 | 优先级 |
-|------|------|------|--------|
-| Claude 响应结束 | `Stop` 钩子 | 「Claude 任务完成」✅ | 普通 |
-| Claude 等你输入 | `Notification(idle_prompt)` | 「Claude 等待输入」💬 | 高 |
-| Claude 请求工具授权 | `Notification(permission_prompt)` | 「Claude 请求授权」🚨 | 紧急（常驻 + 循环报警，直到你处理）|
+| Moment | Trigger | Notification | Priority |
+|--------|---------|--------------|----------|
+| Claude finished responding | `Stop` hook | "Claude task complete" ✅ | Normal |
+| Claude is waiting for input | `Notification(idle_prompt)` | "Claude awaits input" 💬 | High |
+| Claude requests tool permission | `Notification(permission_prompt)` | "Claude requests permission" 🚨 | Urgent (persistent + looping alarm until you act) |
 
-> 隐私：通知正文只含 **事件类型 + 项目名**（当前目录名），**绝不**包含代码 / 命令 / 文件路径 / 密钥。
+> **Privacy:** notification bodies contain **only the event type + project name** (the current directory name). They **never** include code, commands, file paths, or secrets.
 
 ---
 
-## 一、服务器端安装（Linux）
+## 1. Server-side install (Linux)
 
-### 默认：用公共 ntfy.sh（零部署）
+### Default: use public ntfy.sh (zero deployment)
 ```bash
-# 1. 把 server/ 传到服务器
+# 1. Copy server/ to your server
 scp -r server/ user@your-server:~/claude-notify-hooks/
 
-# 2. 登录服务器，安装
+# 2. SSH in and install
 ssh user@your-server
 cd ~/claude-notify-hooks
 chmod +x install.sh
 ./install.sh
 ```
-`install.sh` 会：
-1. 用 `openssl rand -hex 12` 生成一个不可猜的 **topic**（公共 ntfy 下相当于密码）；
-2. 写 `~/.config/claude-notify/config.json`（权限 600）；
-3. 把 `Stop` / `Notification` 钩子**幂等合并**进 `~/.claude/settings.json`（保留你已有的钩子和配置，重装不重复）。
+`install.sh` will:
+1. Generate an unguessable **topic** with `openssl rand -hex 12` (acts as a password on public ntfy);
+2. Write `~/.config/claude-notify/config.json` (chmod 600);
+3. **Idempotently merge** the `Stop` / `Notification` hooks into `~/.claude/settings.json` (preserving your existing hooks and config; reinstalling won't duplicate).
 
-安装完会打印 topic，**记下它**，下一步填到 Windows App。
+It prints the topic at the end — **write it down**, you'll paste it into the Windows app next.
 
-### 验证服务器端
+### Verify the server side
 ```bash
-# 手动触发一次 Stop 事件
+# Trigger a Stop event manually
 echo '{"hook_event_name":"Stop","cwd":"/home/me/proj"}' \
   | python3 ~/claude-notify-hooks/claude_notify_hook.py
 
-# 设了调试可看到分类日志
+# With debug enabled you can see classification output
 CLAUDE_NTFY_DEBUG=1 echo '{"hook_event_name":"Notification","notification_type":"permission_prompt","cwd":"/x"}' \
   | python3 ~/claude-notify-hooks/claude_notify_hook.py
-# 预期 stderr: posted | Claude 请求授权 | prio=urgent | [x] ...
+# Expected stderr: posted | Claude requests permission | prio=urgent | [x] ...
 ```
-消息已发到 ntfy。若 Windows / 手机端正订阅该 topic，会秒级收到。
+The message is now published to ntfy. If a Windows / phone client is subscribed to that topic, it arrives within seconds.
 
-### 卸载
-从 `~/.claude/settings.json` 的 `Stop` / `Notification` 数组里删掉指向 `claude_notify_hook.py` 的条目即可（重跑 `install.sh` 也会先移除旧的再加新的，可借它「重置」）。
+### Uninstall
+Remove the entries pointing to `claude_notify_hook.py` from the `Stop` / `Notification` arrays in `~/.claude/settings.json`. (Re-running `install.sh` also removes the old entries before re-adding, so you can use it to "reset".)
 
 ---
 
-## 二、Windows 端安装
+## 2. Windows-side install
 
-### 方式 A：直接用打包好的 exe
-拿到 `dist\ClaudeNotify\` 整个文件夹 → 双击 `ClaudeNotify.exe`：
-- 首次启动自动弹**设置框**，填入服务器端打印的 topic（服务器地址默认 `https://ntfy.sh`，token 留空）→ 保存；
-- 系统托盘出现蓝色「C」图标，开始订阅；
-- 点托盘菜单「**发送测试通知**」可立即验证 Toast 是否正常（无需服务器参与）。
+### Option A: use the prebuilt exe
+Grab the entire `dist\ClaudeNotify\` folder → double-click `ClaudeNotify.exe`:
+- On first launch a **settings dialog** appears; paste the topic printed by the server (server URL defaults to `https://ntfy.sh`, token left empty) → save;
+- A blue "C" icon appears in the system tray and starts subscribing;
+- Tray menu **"Send test notification"** verifies the toast pipeline instantly (no server needed).
 
-### 方式 B：自己打包
+### Option B: build it yourself
 ```bat
 cd claude-notify-windows
 pip install -r requirements.txt pyinstaller
 build\build.bat
-:: 产物：dist\ClaudeNotify\ClaudeNotify.exe
+:: Output: dist\ClaudeNotify\ClaudeNotify.exe
 ```
-详见 `windows\build\README.md`。
+See `windows\build\README.md` for details.
 
-### 托盘菜单
-- 发送测试通知 / 历史记录 / 设置…
-- 暂停全部通知（勾选）/ 开机自启（勾选，写注册表 `HKCU\…\Run`）
-- 退出
+### Tray menu
+- Send test notification / History / Settings…
+- Pause all notifications (checkbox) / Start with Windows (checkbox, writes registry `HKCU\…\Run`)
+- Quit
 
-### 图标状态
-- 🔵 蓝「C」：已连接
-- 🟠 橙「C」：有新通知未查看
-- 🔴 红「!」：连接断开，指数退避重连中
-
----
-
-## 三、后续拓展到 iPhone（一行配置）
-
-ntfy 是标准协议，iPhone 装官方 **ntfy** App（App Store 免费）：
-1. 打开 App → 添加订阅 → 输入**同一个 topic**；
-2. （若服务器端设了 token）在 App 设置里填 token；
-3. 完事。Claude 的事件会同时弹到 Windows 和 iPhone。
-
-> iPhone 端无需任何代码改动——它就是 ntfy 的另一个订阅者。Windows 小程序和 iPhone 各自独立，互不影响。
+### Icon states
+- 🔵 blue "C": connected
+- 🟠 orange "C": unread notifications
+- 🔴 red "!": disconnected, reconnecting with exponential backoff
 
 ---
 
-## 四、想完全私有？自托管 ntfy（两端代码零改动）
+## 3. Extend to iPhone later (one config line)
 
-公共 `ntfy.sh` 开箱即用，但消息过境第三方。要全程不出内网：
+ntfy is a standard protocol. Install the official **ntfy** app on iPhone (free on the App Store):
+1. Open the app → add a subscription → enter the **same topic**;
+2. (If the server uses a token) fill in the token in the app settings;
+3. Done. Claude's events now pop on both Windows and iPhone.
+
+> No code change is needed for iPhone — it is simply another ntfy subscriber. The Windows app and iPhone are independent and don't affect each other.
+
+---
+
+## 4. Want it fully private? Self-host ntfy (no code change on either side)
+
+Public `ntfy.sh` works out of the box, but messages transit a third party. To keep everything inside your network:
 
 ```bash
-# 服务器上跑单文件 ntfy（Docker 示例）
+# Run the single-binary ntfy on the server (Docker example)
 docker run -d --name ntfy --restart=unless-stopped \
   -p 8090:80 -v /var/lib/ntfy:/var/lib/ntfy \
   binwiederhier/ntfy serve
 
-# 加 HTTPS（nginx/caddy 反代 + 鉴权），略
+# Add HTTPS (nginx/caddy reverse proxy + auth), omitted here
 ```
-然后：
-1. 服务器端：编辑 `~/.config/claude-notify/config.json` 的 `url` 改成 `https://your-host:8090`（可加 access token）；
-2. Windows 端：设置框里把「服务器地址」改成同一个自托管地址。
+Then:
+1. Server side: edit `url` in `~/.config/claude-notify/config.json` to `https://your-host:8090` (optionally add an access token);
+2. Windows side: set "Server URL" in the settings dialog to the same self-hosted address.
 
-**钩子脚本和 Windows 代码都不用改**——端点 URL 全程可配置。
+**The hook script and Windows code don't change at all** — the endpoint URL is fully configurable.
 
 ---
 
-## 五、故障排查
+## 5. Troubleshooting
 
-| 现象 | 排查 |
-|------|------|
-| Windows 收不到通知 | 1) 托盘图标是否蓝色（连接）？红色则看服务器地址/topic 是否对；2) 设了 `CLAUDE_NTFY_DEBUG=1` 看服务器是否 `posted`；3) topic 必须两端完全一致 |
-| 服务器报 `no topic configured` | `~/.config/claude-notify/config.json` 没生成或 topic 为空，重跑 `install.sh` |
-| Toast 不弹（服务器确认已发） | Win11「专注助手/勿扰」是否开启？或 AppUserModelID 未注册→把 exe 快捷方式放进「开始菜单\程序」；或暂切 `Windows-Toasts` |
-| exe 被 SmartScreen 拦 | 未签名所致，点「更多信息」→「仍要运行」；可自签名 |
-| 通知把 JSON 当文本显示 | 已修复：服务器脚本 POST 到根路径 `/`（JSON 发布模式），请用仓库最新 `claude_notify_hook.py` |
-| `permission_prompt` 没循环报警 | 设置里确认「请求授权循环报警」勾选；专注助手可能压制循环音 |
-| 钩子拖慢 Claude | 已 `async:true` + 脚本 5s 超时 + 吞所有异常；最坏 5s 内返回，实测 <10ms |
+| Symptom | Check |
+|---------|-------|
+| No notifications on Windows | 1) Is the tray icon blue (connected)? If red, verify server URL/topic; 2) Set `CLAUDE_NTFY_DEBUG=1` to confirm the server printed `posted`; 3) The topic must be identical on both ends |
+| Server reports `no topic configured` | `~/.config/claude-notify/config.json` is missing or topic is empty — re-run `install.sh` |
+| Toasts don't appear (server confirmed sent) | Is Windows 11 Focus Assist / Do Not Disturb on? Or AppUserModelID not registered → put a shortcut to the exe in Start Menu\Programs; or temporarily switch to `Windows-Toasts` |
+| exe blocked by SmartScreen | It's unsigned — click "More info" → "Run anyway"; you can self-sign |
+| Notification shows the JSON as text | Already fixed: the server script POSTs to the root `/` (JSON publish mode) — use the latest `claude_notify_hook.py` from this repo |
+| `permission_prompt` has no looping alarm | Confirm "Permission request looping alarm" is checked in settings; Focus Assist may suppress the loop |
+| Hook slows down Claude | It's `async:true` + a 5s script timeout + swallows all exceptions; returns within 5s worst case, measured <10ms |
 
-### 手动核对 ntfy 消息（curl poll）
+### Manually inspect ntfy messages (curl poll)
 ```bash
-TOPIC=你生成的topic
+TOPIC=your-generated-topic
 curl -s "https://ntfy.sh/$TOPIC/json?poll=1" | python3 -c "
 import sys,json
 for l in sys.stdin:
@@ -155,39 +155,39 @@ for l in sys.stdin:
     if m.get('event')=='message':
         print(m.get('priority'), m.get('title'), '|', m.get('message'))
 "
-# 期望看到独立的 title/priority/tags 字段（而非整段 JSON 被当文本）
+# Expect separate title/priority/tags fields (not the whole JSON shown as text)
 ```
 
 ---
 
-## 六、项目结构
+## 6. Project structure
 ```
 claude-notify/
 ├── README.md
-├── server/                      # Linux 服务器端
-│   ├── claude_notify_hook.py    # 零依赖钩子脚本（json + urllib）
-│   └── install.sh               # 生成 topic、写 config、合并 settings.json
-└── windows/                     # Windows 托盘小程序
-    ├── main.py                  # 入口，装配 config+subscriber+tray
+├── server/                      # Linux server side
+│   ├── claude_notify_hook.py    # zero-dependency hook (json + urllib)
+│   └── install.sh               # generate topic, write config, merge settings.json
+└── windows/                     # Windows tray app
+    ├── main.py                  # entry; wires config+subscriber+tray
     ├── requirements.txt         # pystray / Pillow / win11toast / requests
     ├── app/
-    │   ├── constants.py         # 优先级、类别、默认配置
-    │   ├── config.py            # %APPDATA%\ClaudeNotify\config.json 读写
-    │   ├── history.py           # 线程安全环形缓冲
-    │   ├── subscriber.py        # ntfy 流式订阅 + 重连 + 心跳看门狗
-    │   ├── notifier.py          # win11toast 分级 Toast
-    │   ├── tray.py              # pystray 托盘/菜单/图标
-    │   ├── settings_dialog.py   # tkinter 设置 GUI
-    │   ├── history_dialog.py    # tkinter 历史查看
-    │   └── autostart.py         # 注册表开机自启
+    │   ├── constants.py         # priorities, categories, default config
+    │   ├── config.py            # read/write %APPDATA%\ClaudeNotify\config.json
+    │   ├── history.py           # thread-safe ring buffer
+    │   ├── subscriber.py        # ntfy streaming subscribe + reconnect + heartbeat watchdog
+    │   ├── notifier.py          # win11toast leveled toast
+    │   ├── tray.py              # pystray tray / menu / icon states
+    │   ├── settings_dialog.py   # tkinter settings GUI
+    │   ├── history_dialog.py    # tkinter history view
+    │   └── autostart.py         # registry autostart
     └── build/
         ├── ClaudeNotify.spec    # PyInstaller onedir
-        ├── build.bat            # 一键打包
+        ├── build.bat            # one-click build
         └── README.md
 ```
 
-## 安全要点
-- Topic 用 `openssl rand` 生成（不可猜）；公共 ntfy 下相当于密码，**不要外泄**。
-- `config.json` 权限 600；可选 access token 进一步鉴权（自托管时建议开启）。
-- 通知不含任何代码/密钥/路径——即使 topic 泄露，泄露的也只是「Claude 在 X 项目完成了/等你输入」。
-- `install.sh` 只**合并**你的 `settings.json`，解析失败先备份 `.bak`，绝不覆盖其它配置。
+## Security notes
+- The topic is generated with `openssl rand` (unguessable); on public ntfy it acts as a password — **don't leak it**.
+- `config.json` is chmod 600; an optional access token adds authentication (recommended for self-hosting).
+- Notifications contain no code/secrets/paths — even if the topic leaks, only "Claude finished / awaits input on project X" is exposed.
+- `install.sh` only **merges** into your `settings.json`; on parse failure it backs up to `.bak` first and never overwrites other config.
