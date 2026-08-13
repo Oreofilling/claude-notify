@@ -4,7 +4,7 @@
 # 做三件事：
 #   1. 生成不可猜的 ntfy topic（openssl rand，公共 ntfy.sh 下相当于密码），可复用已有
 #   2. 写 ~/.config/claude-notify/config.json（chmod 600），含 url/topic/token
-#   3. 把 Stop / Notification 钩子安全合并进 ~/.claude/settings.json（幂等，不破坏已有配置）
+#   3. 把 PreCompact / Stop / Notification 钩子安全合并进 ~/.claude/settings.json（幂等，不破坏已有配置）
 # 最后打印 topic 供 Windows App 粘贴。
 #
 # 安全：config.json 只含 topic（非密钥）；settings.json 合并用标准库 json 解析，
@@ -104,13 +104,14 @@ def strip_ours(groups):
 
 # Stop：无 matcher（每次响应结束都触发）
 # Notification：省略 matcher -> 捕获全部 notification_type
+# PreCompact：compact 前触发，钩子脚本据此写标记，抑制随后的「compact 摘要回合」Stop 弹窗
 new_group = {"hooks": [{"type": "command", "command": cmd, "timeout": 10, "async": True}]}
-for event in ("Stop", "Notification"):
+for event in ("Stop", "Notification", "PreCompact"):
     hooks[event] = strip_ours(hooks.get(event)) + [new_group]
 
 with open(settings_path, "w", encoding="utf-8") as f:
     json.dump(data, f, indent=2, ensure_ascii=False)
-print("🔧 已合并 Stop/Notification 钩子到 %s" % settings_path)
+print("🔧 已合并 PreCompact/Stop/Notification 钩子到 %s" % settings_path)
 PYEOF
 
 echo

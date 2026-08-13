@@ -15,11 +15,19 @@
 import sys
 import os
 import json
+import time
 import urllib.request
 
 CONFIG_PATH = os.path.expanduser("~/.config/claude-notify/config.json")
 DEFAULT_URL = "https://ntfy.sh"
 TIMEOUT = 5  # 秒
+EVENT_LOG = os.path.expanduser("~/.config/claude-notify/events.log")
+
+# compact 抑制：PreCompact 钩子写一条「最近发生过 compact」的标记；
+# 随后若 Stop 落在窗口内，即判定为 compact 摘要回合（无真实答案），跳过弹窗。
+# 仅按会话 id 写标记文件，绝不读对话内容；标记一次性消费 + 过期自动清理。
+COMPACT_DIR = os.path.expanduser("~/.config/claude-notify")
+COMPACT_SUPPRESS_WINDOW = 180  # 秒
 
 
 def log(msg):
@@ -84,11 +92,125 @@ def _prio_num(p):
     return _PRIO.get(p, 3)
 
 
-def build_body(base_body, data):
-    """正文加项目名前缀（仅目录名，不含完整路径）。"""
-    cwd = data.get("cwd") or ""
-    proj = os.path.basename(cwd.rstrip("/")) if cwd else ""
-    return ("[%s] %s" % (proj, base_body)) if proj else base_body
+def resolve_label(cwd, cfg):
+    """决定正文前缀里的项目名（只读目录/标记文件，绝不读对话内容）。
+
+    优先级：
+      1. 项目根 .claude-notify 标记文件（取首个非注释非空行，向上查找）
+      2. config.project_labels: {绝对路径: 名字}
+      3. 回退：cwd 末段目录名（与旧行为一致）
+    """
+    # 1. 向上查找 .claude-notify 标记文件
+    if cwd:
+        d = os.path.abspath(cwd)
+        prev = None
+        while d and d != prev:
+            marker = os.path.join(d, ".claude-notify")
+            try:
+                if os.path.isfile(marker):
+                    with open(marker, "r", encoding="utf-8") as f:
+                        for line in f:
+                            s = line.strip()
+                            if s and not s.startswith("#"):
+                                # 轻清洗：去方括号/截断，避免破坏 [..] 包裹
+                                s = s.replace("[", "").replace("]", "")
+                                return s[:40]
+            except Exception:
+                pass
+            prev = d
+            d = os.path.dirname(d)
+    # 2. config 显式映射（绝对路径 -> 名字）
+    labels = cfg.get("project_labels") if isinstance(cfg, dict) else None
+    if cwd and isinstance(labels, dict):
+        v = (labels.get(cwd) or "").strip()
+        if v:
+            return v[:40]
+    # 3. 回退：目录名
+    return (os.path.basename(cwd.rstrip("/")) if cwd else "")
+
+
+def log_event(data, label, note=""):
+    """只记元数据（不含消息正文/完整路径/字段值），用于定位 compact 等误触发。
+
+    events.log 字段：时间 / hook_event_name / notification_type / stop_hook_active /
+    label / last_assistant_message 长度与是否为空 / payload顶层键名 / 可选 note。
+    """
+    try:
+        keys = ",".join(sorted(data.keys())) if isinstance(data, dict) else "-"
+        lam = data.get("last_assistant_message")
+        lam = lam if isinstance(lam, str) else ("" if lam is None else str(lam))
+        line = "%s hook=%s ntype=%s stop_active=%s label=%s lam_len=%s lam_empty=%s keys=%s" % (
+            time.strftime("%Y-%m-%d %H:%M:%S"),
+            data.get("hook_event_name") or "-",
+            data.get("notification_type") or "-",
+            data.get("stop_hook_active"),
+            label or "-",
+            len(lam),
+            str(not bool(lam.strip())),
+            keys,
+        )
+        if note:
+            line += " note=%s" % note
+        line += "\n"
+        with open(EVENT_LOG, "a", encoding="utf-8") as f:
+            f.write(line)
+    except Exception:
+        pass
+
+
+def _compact_marker_path(session_id):
+    sid = (session_id or "").strip().replace("/", "_")
+    if not sid:
+        sid = "_global"
+    return os.path.join(COMPACT_DIR, "compact-%s.marker" % sid)
+
+
+def mark_compact(session_id):
+    """PreCompact 触发：写一条时间戳标记，供随后的 Stop 判定是否为 compact 摘要回合。"""
+    try:
+        os.makedirs(COMPACT_DIR, exist_ok=True)
+        with open(_compact_marker_path(session_id), "w", encoding="utf-8") as f:
+            f.write("%.3f" % time.time())
+    except Exception as e:
+        log("mark_compact failed: %r" % e)
+
+
+def consume_compact_stop(session_id):
+    """Stop 触发：若本会话近期(<=COMPACT_SUPPRESS_WINDOW)有 PreCompact 标记，
+    视为 compact 摘要回合 -> 返回 True（应跳过弹窗），并删除标记（一次性消费）。
+    同时顺手清理 >1 小时的陈旧标记，避免堆积。
+
+    判定只依赖标记文件的 mtime 与 session_id，绝不读 transcript / 消息正文。
+    """
+    now = time.time()
+    # 顺手清理陈旧标记（>1h）
+    try:
+        for name in os.listdir(COMPACT_DIR):
+            if not (name.startswith("compact-") and name.endswith(".marker")):
+                continue
+            p = os.path.join(COMPACT_DIR, name)
+            try:
+                if now - os.path.getmtime(p) > 3600:
+                    os.remove(p)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    path = _compact_marker_path(session_id)
+    try:
+        if not os.path.isfile(path):
+            return False
+        fresh = (now - os.path.getmtime(path)) <= COMPACT_SUPPRESS_WINDOW
+        os.remove(path)  # 一次性消费（命中或过期都删，避免重复抑制）
+        return fresh
+    except Exception as e:
+        log("consume_compact_stop failed: %r" % e)
+        return False
+
+
+def build_body(base_body, label):
+    """正文加项目名前缀（label 由 resolve_label 决定）。"""
+    return ("[%s] %s" % (label, base_body)) if label else base_body
 
 
 def publish(cfg, title, tags, priority, body):
@@ -127,8 +249,25 @@ def main():
         data = {}
     try:
         cfg = load_config()
+        label = resolve_label(data.get("cwd") or "", cfg)
+        hook = (data.get("hook_event_name") or "").strip()
+
+        # PreCompact：只写「最近 compact」标记 + 记日志，绝不发通知
+        if hook == "PreCompact":
+            mark_compact(data.get("session_id") or "")
+            log_event(data, label, note="precompact_marker")
+            log("precompact marker set | session=%s" % (data.get("session_id") or "-"))
+            return
+
+        # Stop：若是 compact 摘要回合（近期有 PreCompact 标记）-> 跳过弹窗
+        if hook == "Stop" and consume_compact_stop(data.get("session_id") or ""):
+            log_event(data, label, note="suppressed=compact")
+            log("stop suppressed (compact summary) | session=%s" % (data.get("session_id") or "-"))
+            return
+
         title, tags, priority, body = classify(data)
-        body = build_body(body, data)
+        body = build_body(body, label)
+        log_event(data, label)
         publish(cfg, title, tags, priority, body)
         log("posted | %s | prio=%s | %s" % (title, priority, body))
     except Exception as e:

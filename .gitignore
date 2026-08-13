@@ -13,6 +13,9 @@ windows/build/ClaudeNotify/
 .mypy_cache/
 .pytest_cache/
 
+# ClaudeNotify 本地项目显示名标记（每台机器/每个用户自定，勿提交）
+.claude-notify
+
 # 备份/临时
 *.bak
 *.tmp
